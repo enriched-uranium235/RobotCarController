@@ -8,6 +8,7 @@ except ImportError:
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
+from main import MotorDriver
 import uvicorn
 
 app = FastAPI()
@@ -58,7 +59,6 @@ class DummyMotorController:
 
 
 try:
-    from main import MotorDriver
     motor = RealMotorController(MotorDriver())
     print("[Motor] Hardware driver (PCA9685) initialized.")
 except Exception as e:
