@@ -1,5 +1,6 @@
 import asyncio
 import json
+import time
 cv2_imported = True
 try:
     import cv2
@@ -20,6 +21,16 @@ app = FastAPI()
 LEFT_MOTOR = 0
 RIGHT_MOTOR = 1
 
+# 速度に関する設定（マリオカート風: コマンド受信直後は最高速の20%、5秒で最高速の100%まで加速）
+MIN_SPEED_PERCENT = 20
+MAX_SPEED_PERCENT = 100
+RAMP_UP_SECONDS = 5.0
+
+# ステアリングの不感帯（この範囲内の傾きは「倒していない」とみなす）
+STEER_DEADZONE = 0.1
+
+CONTROL_INTERVAL_SEC = 0.05  # モーター制御ループの周期（クライアントからの次のコマンドを待つ間もこの周期で駆動し続ける）
+
 
 def clamp_speed(speed):
     try:
@@ -27,6 +38,34 @@ def clamp_speed(speed):
     except (TypeError, ValueError):
         speed = 0
     return max(0, min(100, speed))
+
+
+def calc_ramped_speed(held_seconds):
+    """同じコマンドを受信し続けた時間から目標速度(%)を算出する（受信直後20% → 5秒で100%）"""
+    ratio = min(max(held_seconds / RAMP_UP_SECONDS, 0.0), 1.0)
+    return MIN_SPEED_PERCENT + (MAX_SPEED_PERCENT - MIN_SPEED_PERCENT) * ratio
+
+
+def calc_wheel_speeds(base_speed, stick_x):
+    """Lスティックの左右方向の傾きから左右モーターの速度(%)を算出する
+
+    例: base_speed=100, stick_x=0.5 (右に半分倒す) の場合、
+        右に曲がろうとしているとみなし右タイヤの速度をさらに1/2にする。
+    """
+    left_speed = base_speed
+    right_speed = base_speed
+
+    if abs(stick_x) > STEER_DEADZONE:
+        # 倒した量が大きいほど、内側のタイヤの速度を落とす
+        inner_ratio = max(0.0, 1.0 - abs(stick_x))
+        if stick_x > 0:
+            # 右に倒している -> 右折 -> 右タイヤを減速
+            right_speed = base_speed * inner_ratio
+        else:
+            # 左に倒している -> 左折 -> 左タイヤを減速
+            left_speed = base_speed * inner_ratio
+
+    return left_speed, right_speed
 
 
 class RealMotorController:
@@ -86,29 +125,68 @@ async def video_feed():
     """カメラ映像のストリーミング配信エンドポイント"""
     return StreamingResponse(generate_frames(), media_type="multipart/x-mixed-replace; boundary=frame")
 
+
+class DriveState:
+    """クライアントから最後に受信した操作状態（cmd/stick_x）と、その状態になった時刻を保持する"""
+
+    def __init__(self):
+        self.cmd = "stop"
+        self.stick_x = 0.0
+        self.direction_started_at = None
+
+    def update(self, cmd, stick_x):
+        if cmd != self.cmd:
+            # 方向が切り替わった時だけ加速をやり直す（ステアリングだけの変化では加速を維持する）
+            self.cmd = cmd
+            self.direction_started_at = time.monotonic() if cmd != "stop" else None
+        self.stick_x = stick_x
+
+
+async def motor_control_loop(state: DriveState):
+    """クライアントから次のコマンドが送られてくるまで、現在の操作状態を維持してモーターを駆動し続けるループ"""
+    while True:
+        if state.cmd == "stop":
+            motor.stop()
+        else:
+            held_seconds = time.monotonic() - state.direction_started_at
+            base_speed = calc_ramped_speed(held_seconds)
+            left_speed, right_speed = calc_wheel_speeds(base_speed, state.stick_x)
+            motor.drive(state.cmd, left_speed, right_speed)
+        await asyncio.sleep(CONTROL_INTERVAL_SEC)
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     motor.stop()
     print("Client connected. Motor standby (STOP).")
+
+    state = DriveState()
+    control_task = asyncio.create_task(motor_control_loop(state))
+
     try:
         while True:
             data = await websocket.receive_text()
             message = json.loads(data)
             cmd = message.get("cmd", "stop")
-            left_speed = message.get("left_speed", 0)
-            right_speed = message.get("right_speed", 0)
+            stick_x = message.get("stick_x", 0.0)
 
-            if cmd in ("forward", "backward"):
-                motor.drive(cmd, left_speed, right_speed)
-            else:
-                motor.stop()
+            if cmd not in ("forward", "backward"):
+                cmd = "stop"
+
+            state.update(cmd, stick_x)
 
             await websocket.send_text(json.dumps({"status": f"processed_{cmd}"}))
 
     except WebSocketDisconnect:
-        motor.stop()
         print("Client disconnected. Safety STOP.")
+    finally:
+        control_task.cancel()
+        try:
+            await control_task
+        except asyncio.CancelledError:
+            pass
+        motor.stop()
 
 if __name__ == "__main__":
     motor.stop()

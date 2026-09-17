@@ -1,13 +1,12 @@
 import asyncio
 import json
 import threading
-import time
 import cv2
 import pygame
 import websockets
 
 # ラズパイのIPアドレスとポートを指定
-RASPBERRY_PI_IP = "192.168.X.X"  # ←ご自身のラズパイのIPに変更してください
+RASPBERRY_PI_IP = "192.168.1.67"  # ←ご自身のラズパイのIPに変更してください
 WS_URI = f"ws://{RASPBERRY_PI_IP}:8000/ws"
 STREAM_URL = f"http://{RASPBERRY_PI_IP}:8000/video_feed"  # 将来的なカメラ配信用
 
@@ -16,15 +15,11 @@ BUTTON_A = 0  # 前進
 BUTTON_B = 1  # 後退
 AXIS_LSTICK_X = 0  # Lスティック 左右
 
-# 速度に関する設定（マリオカート風: 押した瞬間は最高速の20%、5秒押し続けると最高速）
-MIN_SPEED_PERCENT = 20
-MAX_SPEED_PERCENT = 100
-RAMP_UP_SECONDS = 5.0
+# ステアリングの量子化しきい値（送信頻度を下げるため、傾きを段階的な値に丸める）
+STEER_DEADZONE = 0.1     # |x| <= 0.1        -> 0.0（倒していないとみなす）
+STEER_MID_THRESHOLD = 0.75  # 0.1 < |x| < 0.75 -> 0.5, 0.75 <= |x| <= 1.0 -> 1.0
 
-# ステアリングの不感帯（この範囲内の傾きは「倒していない」とみなす）
-STEER_DEADZONE = 0.1
-
-SEND_INTERVAL_SEC = 0.05  # 20Hzでポーリング/送信
+SEND_INTERVAL_SEC = 0.05  # 状態監視のポーリング間隔（実際の送信は状態が変化した時のみ）
 
 # 状態管理用
 running = True
@@ -48,36 +43,25 @@ def camera_stream_worker():
     cv2.destroyAllWindows()
 
 
-def calc_ramped_speed(held_seconds):
-    """ボタンを押し続けた時間から目標速度(%)を算出する（押下直後20% → 5秒で100%）"""
-    ratio = min(max(held_seconds / RAMP_UP_SECONDS, 0.0), 1.0)
-    return MIN_SPEED_PERCENT + (MAX_SPEED_PERCENT - MIN_SPEED_PERCENT) * ratio
+def quantize_stick(stick_x):
+    """Lスティックの傾きを離散値へ量子化する（送信頻度を下げるため）
 
-
-def calc_wheel_speeds(base_speed, stick_x):
-    """Lスティックの左右方向の傾きから左右モーターの速度(%)を算出する
-
-    例: base_speed=100, stick_x=0.5 (右に半分倒す) の場合、
-        右に曲がろうとしているとみなし右タイヤの速度をさらに1/2にする。
+    |x| <= 0.1         -> 0.0（不感帯）
+    0.1 < |x| < 0.75   -> 0.5
+    0.75 <= |x| <= 1.0 -> 1.0
     """
-    left_speed = base_speed
-    right_speed = base_speed
-
-    if abs(stick_x) > STEER_DEADZONE:
-        # 倒した量が大きいほど、内側のタイヤの速度を落とす
-        inner_ratio = max(0.0, 1.0 - abs(stick_x))
-        if stick_x > 0:
-            # 右に倒している -> 右折 -> 右タイヤを減速
-            right_speed = base_speed * inner_ratio
-        else:
-            # 左に倒している -> 左折 -> 左タイヤを減速
-            left_speed = base_speed * inner_ratio
-
-    return left_speed, right_speed
+    magnitude = abs(stick_x)
+    if magnitude <= STEER_DEADZONE:
+        quantized = 0.0
+    elif magnitude < STEER_MID_THRESHOLD:
+        quantized = 0.5
+    else:
+        quantized = 1.0
+    return quantized if stick_x >= 0 else -quantized
 
 
 async def ws_controller_loop():
-    """WebSocketでゲームパッドの入力をラズパイへ送り続けるループ"""
+    """ゲームパッドの入力状態を監視し、変化があった時だけラズパイへ送信するループ"""
     global running
 
     # pygame（ゲームパッド）の初期化
@@ -95,8 +79,6 @@ async def ws_controller_loop():
     async with websockets.connect(WS_URI) as ws:
         print("Connected to robot server.")
 
-        direction = "stop"          # 現在の走行方向 ("forward" / "backward" / "stop")
-        press_started_at = None     # 現在の方向のボタンを押し始めた時刻
         last_sent_payload = None
 
         while running:
@@ -106,34 +88,20 @@ async def ws_controller_loop():
             b_pressed = bool(joystick.get_button(BUTTON_B)) if joystick else False
             stick_x = joystick.get_axis(AXIS_LSTICK_X) if joystick else 0.0
 
-            now = time.monotonic()
-
+            # AボタンとBボタンが同時に押されていたらAボタン（前進）を優先する
             if a_pressed:
-                new_direction = "forward"
+                direction = "forward"
             elif b_pressed:
-                new_direction = "backward"
+                direction = "backward"
             else:
-                new_direction = "stop"
-
-            # 方向が切り替わった瞬間に押下開始時刻をリセット（=段階的な加速をやり直す）
-            if new_direction != direction:
-                direction = new_direction
-                press_started_at = now if direction != "stop" else None
-
-            if direction == "stop":
-                left_speed, right_speed = 0, 0
-            else:
-                held_seconds = now - press_started_at
-                base_speed = calc_ramped_speed(held_seconds)
-                left_speed, right_speed = calc_wheel_speeds(base_speed, stick_x)
+                direction = "stop"
 
             payload = {
                 "cmd": direction,
-                "left_speed": round(left_speed),
-                "right_speed": round(right_speed),
+                "stick_x": quantize_stick(stick_x),
             }
 
-            # 値に変化がある時だけ送信（無駄な送信を減らす）
+            # 入力状態に変化がある時だけ送信（サーバー側は次の送信があるまで現状態を維持する）
             if payload != last_sent_payload:
                 await ws.send(json.dumps(payload))
                 last_sent_payload = payload
