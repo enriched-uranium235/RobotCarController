@@ -13,6 +13,11 @@ try:
 except ImportError:
     picamera2_imported = False
 
+if picamera2_imported:
+    print("[Camera] picamera2 module found.")
+else:
+    print("[Camera] picamera2 not available. /video_feed will return an empty stream.")
+
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 import uvicorn
