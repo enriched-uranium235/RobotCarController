@@ -83,7 +83,7 @@ class RealMotorController:
         left_value = self._to_signed_speed(direction, left_speed)
         right_value = self._to_signed_speed(direction, right_speed)
         # motor1 = 左輪, motor2 = 右輪（配線が逆の場合は入れ替える）
-        self.motors.setSpeeds(left_value, -right_value)
+        self.motors.setSpeeds(-left_value, right_value)
 
     def stop(self):
         self.motors.setSpeeds(0, 0)
