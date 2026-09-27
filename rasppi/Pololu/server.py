@@ -7,6 +7,12 @@ try:
 except ImportError:
     cv2_imported = False
 
+picamera2_imported = True
+try:
+    from picamera2 import Picamera2
+except ImportError:
+    picamera2_imported = False
+
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 import uvicorn
@@ -110,20 +116,23 @@ except Exception as e:
     motor = DummyMotorController()
 
 
-# 簡易カメラジェネレーター（実機ではCamera Module 3からの映像を流し込む）
+# 簡易カメラジェネレーター（Camera Module 3 は libcamera 経由でのみアクセス可能なため Picamera2 を使用）
 def generate_frames():
-    if not cv2_imported:
+    if not (cv2_imported and picamera2_imported):
         return
-    cap = cv2.VideoCapture(0) # ラズパイのカメラデバイス
-    while True:
-        success, frame = cap.read()
-        if not success:
-            break
-        else:
+    picam2 = Picamera2()
+    config = picam2.create_video_configuration(main={"size": (640, 480), "format": "RGB888"})
+    picam2.configure(config)
+    picam2.start()
+    try:
+        while True:
+            frame = picam2.capture_array()  # "RGB888"指定でもOpenCV互換のBGR順で返る
             _, buffer = cv2.imencode('.jpg', frame)
             frame_bytes = buffer.tobytes()
             yield (b'--frame\r\n'
                    b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+    finally:
+        picam2.stop()
 
 @app.get("/video_feed")
 async def video_feed():
