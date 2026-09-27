@@ -7,17 +7,6 @@ try:
 except ImportError:
     cv2_imported = False
 
-picamera2_imported = True
-try:
-    from picamera2 import Picamera2
-except ImportError:
-    picamera2_imported = False
-
-if picamera2_imported:
-    print("[Camera] picamera2 module found.")
-else:
-    print("[Camera] picamera2 not available. /video_feed will return an empty stream.")
-
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 import uvicorn
@@ -121,23 +110,23 @@ except Exception as e:
     motor = DummyMotorController()
 
 
-# 簡易カメラジェネレーター（Camera Module 3 は libcamera 経由でのみアクセス可能なため Picamera2 を使用）
+# 簡易カメラジェネレーター
+# Raspbian Buster + Camera Module 1 は legacy カメラスタックのみ対応のため、
+# bcm2835-v4l2 カーネルモジュールで /dev/video0 を有効化した上で cv2.VideoCapture(0) を使う
+# （事前に `sudo modprobe bcm2835-v4l2` が必要）
 def generate_frames():
-    if not (cv2_imported and picamera2_imported):
+    if not cv2_imported:
         return
-    picam2 = Picamera2()
-    config = picam2.create_video_configuration(main={"size": (640, 480), "format": "RGB888"})
-    picam2.configure(config)
-    picam2.start()
-    try:
-        while True:
-            frame = picam2.capture_array()  # "RGB888"指定でもOpenCV互換のBGR順で返る
+    cap = cv2.VideoCapture(0) # ラズパイのカメラデバイス
+    while True:
+        success, frame = cap.read()
+        if not success:
+            break
+        else:
             _, buffer = cv2.imencode('.jpg', frame)
             frame_bytes = buffer.tobytes()
             yield (b'--frame\r\n'
                    b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
-    finally:
-        picam2.stop()
 
 @app.get("/video_feed")
 async def video_feed():
