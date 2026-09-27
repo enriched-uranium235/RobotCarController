@@ -1,6 +1,12 @@
 import asyncio
 import json
+import os
 import threading
+
+# ジョイスティック入力のみ使うため、SDLの映像ドライバをdummyに固定する。
+# こうしないとpygame.init()がCocoaのメインメニュー操作を試み、別スレッドから呼んだ際にクラッシュする(macOS)。
+os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+
 import cv2
 import pygame
 import websockets
@@ -25,8 +31,12 @@ SEND_INTERVAL_SEC = 0.05  # 状態監視のポーリング間隔（実際の送�
 running = True
 
 
-def camera_stream_worker():
-    """別スレッドでカメラ映像を受信して表示する"""
+def camera_stream_main():
+    """メインスレッドでカメラ映像を受信して表示する
+
+    macOSではcv2.imshow等のGUI表示はメインスレッドからしか呼び出せないため、
+    表示処理はメインスレッドで行い、ゲームパッド/WebSocket通信を別スレッドに追い出している。
+    """
     global running
     # ※ラズパイ側で映像配信のエンドポイントを用意した場合に機能します
     cap = cv2.VideoCapture(STREAM_URL)
@@ -35,6 +45,7 @@ def camera_stream_worker():
         if ret:
             cv2.imshow("Robot Camera View", frame)
             if cv2.waitKey(1) & 0xFF == ord('q'):
+                running = False
                 break
         else:
             # 映像がまだ取れない場合のダミー表示やウェイト
@@ -112,22 +123,27 @@ async def ws_controller_loop():
     pygame.quit()
 
 
-async def main():
+def network_worker():
+    """別スレッドでゲームパッド監視とWebSocket通信のイベントループを回す"""
     global running
-    # カメラ受信用スレッドの起動
-    cam_thread = threading.Thread(target=camera_stream_worker, daemon=True)
-    cam_thread.start()
-
     try:
-        await ws_controller_loop()
+        asyncio.run(ws_controller_loop())
     except websockets.exceptions.ConnectionClosed:
         print("Connection closed by server.")
     finally:
         running = False
 
+
 if __name__ == "__main__":
+    # ゲームパッド/WebSocket通信用スレッドの起動
+    net_thread = threading.Thread(target=network_worker, daemon=True)
+    net_thread.start()
+
     try:
-        asyncio.run(main())
+        # GUI表示はメインスレッドで行う（macOSの制約）
+        camera_stream_main()
     except KeyboardInterrupt:
         print("Interrupted by user, exiting.")
+    finally:
         running = False
+        net_thread.join(timeout=2)

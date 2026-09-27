@@ -118,15 +118,18 @@ def generate_frames():
     if not cv2_imported:
         return
     cap = cv2.VideoCapture(0) # ラズパイのカメラデバイス
-    while True:
-        success, frame = cap.read()
-        if not success:
-            break
-        else:
+    try:
+        while True:
+            success, frame = cap.read()
+            if not success:
+                break
             _, buffer = cv2.imencode('.jpg', frame)
             frame_bytes = buffer.tobytes()
             yield (b'--frame\r\n'
                    b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+    finally:
+        # クライアント切断時にも確実に解放し、次の接続が /dev/video0 busy にならないようにする
+        cap.release()
 
 @app.get("/video_feed")
 async def video_feed():
