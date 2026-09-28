@@ -114,22 +114,34 @@ except Exception as e:
 # Raspbian Buster + Camera Module 1 は legacy カメラスタックのみ対応のため、
 # bcm2835-v4l2 カーネルモジュールで /dev/video0 を有効化した上で cv2.VideoCapture(0) を使う
 # （事前に `sudo modprobe bcm2835-v4l2` が必要）
+#
+# カメラはモータードライバーと同様にサーバー起動時に一度だけ開き、プロセスが生きている間は
+# 開いたままにする（bcm2835-v4l2 はクライアント接続ごとに open/close を繰り返すと
+# 再オープンに失敗しやすく、クライアント再接続時に映像が戻らなくなるため）。
+camera = None
+if cv2_imported:
+    _camera_candidate = cv2.VideoCapture(0)
+    if _camera_candidate.isOpened():
+        camera = _camera_candidate
+        print("[Camera] /dev/video0 opened.")
+    else:
+        _camera_candidate.release()
+        print("[Camera] Could not open /dev/video0. /video_feed will return an empty stream.")
+
+
 def generate_frames():
-    if not cv2_imported:
+    if camera is None:
         return
-    cap = cv2.VideoCapture(0) # ラズパイのカメラデバイス
-    try:
-        while True:
-            success, frame = cap.read()
-            if not success:
-                break
-            _, buffer = cv2.imencode('.jpg', frame)
-            frame_bytes = buffer.tobytes()
-            yield (b'--frame\r\n'
-                   b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
-    finally:
-        # クライアント切断時にも確実に解放し、次の接続が /dev/video0 busy にならないようにする
-        cap.release()
+    while True:
+        success, frame = camera.read()
+        if not success:
+            # 一時的な読み取り失敗ではカメラを閉じず、少し待って読み直す
+            time.sleep(0.1)
+            continue
+        _, buffer = cv2.imencode('.jpg', frame)
+        frame_bytes = buffer.tobytes()
+        yield (b'--frame\r\n'
+               b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
 
 @app.get("/video_feed")
 async def video_feed():
