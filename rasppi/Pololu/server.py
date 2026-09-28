@@ -44,22 +44,28 @@ def calc_ramped_speed(held_seconds):
 
 
 def calc_wheel_speeds(base_speed, stick_x):
-    """Lスティックの左右方向の傾きから左右モーターの速度(%)を算出する
+    """Lスティックの左右方向の傾きから左右モーターの速度(符号付き%)を算出する
 
-    例: base_speed=100, stick_x=0.5 (右に半分倒す) の場合、
-        右に曲がろうとしているとみなし右タイヤの速度をさらに1/2にする。
+    傾きが大きいほど内側のタイヤを減速し、さらに倒し切ると内側のタイヤを逆回転させて
+    その場に近い旋回（信地旋回〜超信地旋回）ができるようにする。
+    戻り値は base_speed に対する符号付きの値（負の値は逆回転を意味する）。
+
+    例: base_speed=100, stick_x=1.0 (右に最大まで倒す) の場合、
+        右タイヤは-100（逆回転）、左タイヤは100のままとなり、その場で右に旋回する。
     """
     left_speed = base_speed
     right_speed = base_speed
 
     if abs(stick_x) > STEER_DEADZONE:
-        # 倒した量が大きいほど、内側のタイヤの速度を落とす
-        inner_ratio = max(0.0, 1.0 - abs(stick_x))
+        # 不感帯を抜けた量を 0.0(不感帯境界) 〜 1.0(倒し切り) に正規化する
+        turn_ratio = (abs(stick_x) - STEER_DEADZONE) / (1.0 - STEER_DEADZONE)
+        # 内側のタイヤの比率を 1.0(直進と同じ速度) から -1.0(逆回転) まで線形に変化させる
+        inner_ratio = 1.0 - 2.0 * turn_ratio
         if stick_x > 0:
-            # 右に倒している -> 右折 -> 右タイヤを減速
+            # 右に倒している -> 右折 -> 右タイヤを減速・逆回転
             right_speed = base_speed * inner_ratio
         else:
-            # 左に倒している -> 左折 -> 左タイヤを減速
+            # 左に倒している -> 左折 -> 左タイヤを減速・逆回転
             left_speed = base_speed * inner_ratio
 
     return left_speed, right_speed
@@ -73,11 +79,16 @@ class RealMotorController:
         self.max_speed = max_speed
 
     def _to_signed_speed(self, direction, speed_percent):
-        speed_percent = clamp_speed(speed_percent)
-        value = int(round(speed_percent / 100 * self.max_speed))
+        # speed_percent が負の場合は、そのタイヤだけ direction と逆方向に回転させる
+        # （信地旋回・超信地旋回でその場に近い旋回を行うため）
+        magnitude = clamp_speed(abs(speed_percent))
+        value = int(round(magnitude / 100 * self.max_speed))
+        forward = (direction == "forward")
+        if speed_percent < 0:
+            forward = not forward
         # 配線・モーターの向きによっては符号が逆になる場合があるので、
         # 実機で前後が逆に動く場合はここのプラスマイナスを入れ替える
-        return -value if direction == "backward" else value
+        return value if forward else -value
 
     def drive(self, direction, left_speed, right_speed):
         left_value = self._to_signed_speed(direction, left_speed)
@@ -93,9 +104,8 @@ class DummyMotorController:
     """実機が無い環境（開発PCなど）向けの動作確認用ダミー"""
 
     def drive(self, direction, left_speed, right_speed):
-        left_speed = clamp_speed(left_speed)
-        right_speed = clamp_speed(right_speed)
-        print(f"[Motor] {direction.upper()} L={left_speed}% R={right_speed}%")
+        # 負の値は逆回転（信地旋回・超信地旋回）を表すのでそのまま表示する
+        print(f"[Motor] {direction.upper()} L={left_speed:.0f}% R={right_speed:.0f}%")
 
     def stop(self):
         print("[Motor] STOP")
