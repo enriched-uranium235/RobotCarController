@@ -61,12 +61,16 @@ def calc_wheel_speeds(base_speed, stick_x):
         turn_ratio = (abs(stick_x) - STEER_DEADZONE) / (1.0 - STEER_DEADZONE)
         # 内側のタイヤの比率を 1.0(直進と同じ速度) から -1.0(逆回転) まで線形に変化させる
         inner_ratio = 1.0 - 1.5 * turn_ratio
+        # 外側のタイヤは最高速の50%かbase_speedのどちらか大きい方にする（旋回時に外側のタイヤが止まると曲がりすぎるため）
+        outer_speed = max(base_speed, base_speed * 0.5)
         if stick_x > 0:
             # 右に倒している -> 右折 -> 右タイヤを減速・逆回転
             right_speed = base_speed * inner_ratio
+            left_speed = outer_speed
         else:
             # 左に倒している -> 左折 -> 左タイヤを減速・逆回転
             left_speed = base_speed * inner_ratio
+            right_speed = outer_speed
 
     return left_speed, right_speed
 
