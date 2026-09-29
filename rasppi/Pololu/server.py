@@ -18,10 +18,8 @@ app = FastAPI()
 # 実機（Pololu Dual MAX14870 + dual_max14870_rpi.py）が使えない環境ではダミーにフォールバックする
 # ==========================================
 
-# 速度に関する設定（マリオカート風: コマンド受信直後は最高速の20%、5秒で最高速の100%まで加速）
-MIN_SPEED_PERCENT = 20
-MAX_SPEED_PERCENT = 100
-RAMP_UP_SECONDS = 5.0
+# 移動速度（常に最高速で走行する。加減速ランプは行わない）
+SPEED_PERCENT = 100
 
 # ステアリングの不感帯（この範囲内の傾きは「倒していない」とみなす）
 STEER_DEADZONE = 0.1
@@ -37,26 +35,18 @@ def clamp_speed(speed):
     return max(0, min(100, speed))
 
 
-def calc_ramped_speed(held_seconds):
-    """同じコマンドを受信し続けた時間から目標速度(%)を算出する（受信直後20% → 5秒で100%）"""
-    ratio = min(max(held_seconds / RAMP_UP_SECONDS, 0.0), 1.0)
-    return MIN_SPEED_PERCENT + (MAX_SPEED_PERCENT - MIN_SPEED_PERCENT) * ratio
-
-
-def calc_wheel_speeds(base_speed, stick_x):
+def calc_wheel_speeds(stick_x):
     """Lスティックの左右方向の傾きから左右モーターの速度(符号付き%)を算出する
 
     傾きが大きいほど内側のタイヤを減速し、さらに倒し切ると内側のタイヤを逆回転させて
     その場に近い旋回（信地旋回〜超信地旋回）ができるようにする。
-    戻り値は base_speed に対する符号付きの値（負の値は逆回転を意味する）。
+    戻り値は SPEED_PERCENT に対する符号付きの値（負の値は逆回転を意味する）。
 
-    例: base_speed=100, stick_x=1.0 (右に最大まで倒す) の場合、
+    例: stick_x=1.0 (右に最大まで倒す) の場合、
         右タイヤは-100（逆回転）、左タイヤは100のままとなり、その場で右に旋回する。
     """
-    # 一時的にベース速度を100%にして検証
-    base_speed = 100
-    left_speed = base_speed
-    right_speed = base_speed
+    left_speed = SPEED_PERCENT
+    right_speed = SPEED_PERCENT
 
     if abs(stick_x) > STEER_DEADZONE:
         # 不感帯を抜けた量を 0.0(不感帯境界) 〜 1.0(倒し切り) に正規化する
@@ -65,10 +55,10 @@ def calc_wheel_speeds(base_speed, stick_x):
         inner_ratio = 1.0 - 1.0 * turn_ratio
         if stick_x > 0:
             # 右に倒している -> 右折 -> 右タイヤを減速・逆回転
-            right_speed = base_speed * inner_ratio
+            right_speed = SPEED_PERCENT * inner_ratio
         else:
             # 左に倒している -> 左折 -> 左タイヤを減速・逆回転
-            left_speed = base_speed * inner_ratio
+            left_speed = SPEED_PERCENT * inner_ratio
 
     return left_speed, right_speed
 
@@ -162,18 +152,14 @@ async def video_feed():
 
 
 class DriveState:
-    """クライアントから最後に受信した操作状態（cmd/stick_x）と、その状態になった時刻を保持する"""
+    """クライアントから最後に受信した操作状態（cmd/stick_x）を保持する"""
 
     def __init__(self):
         self.cmd = "stop"
         self.stick_x = 0.0
-        self.direction_started_at = None
 
     def update(self, cmd, stick_x):
-        if cmd != self.cmd:
-            # 方向が切り替わった時だけ加速をやり直す（ステアリングだけの変化では加速を維持する）
-            self.cmd = cmd
-            self.direction_started_at = time.monotonic() if cmd != "stop" else None
+        self.cmd = cmd
         self.stick_x = stick_x
 
 
@@ -183,9 +169,7 @@ async def motor_control_loop(state: DriveState):
         if state.cmd == "stop":
             motor.stop()
         else:
-            held_seconds = time.monotonic() - state.direction_started_at
-            base_speed = calc_ramped_speed(held_seconds)
-            left_speed, right_speed = calc_wheel_speeds(base_speed, state.stick_x)
+            left_speed, right_speed = calc_wheel_speeds(state.stick_x)
             motor.drive(state.cmd, left_speed, right_speed)
         await asyncio.sleep(CONTROL_INTERVAL_SEC)
 
