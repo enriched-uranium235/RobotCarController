@@ -62,8 +62,7 @@ def calc_wheel_speeds(base_speed, stick_x):
         # 不感帯を抜けた量を 0.0(不感帯境界) 〜 1.0(倒し切り) に正規化する
         turn_ratio = (abs(stick_x) - STEER_DEADZONE) / (1.0 - STEER_DEADZONE)
         # 内側のタイヤの比率を 1.0(直進と同じ速度) から -1.0(逆回転) まで線形に変化させる
-        # inner_ratio = 1.0 - 1.5 * turn_ratio
-        inner_ratio = 1.0 * turn_ratio
+        inner_ratio = 1.0 - 1.5 * turn_ratio
         if stick_x > 0:
             # 右に倒している -> 右折 -> 右タイヤを減速・逆回転
             right_speed = base_speed * inner_ratio
