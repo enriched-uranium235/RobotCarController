@@ -21,9 +21,12 @@ BUTTON_A = 0  # 前進
 BUTTON_B = 1  # 後退
 AXIS_LSTICK_X = 0  # Lスティック 左右
 
-# ステアリングの量子化しきい値（送信頻度を下げるため、傾きを段階的な値に丸める）
-STEER_DEADZONE = 0.1     # |x| <= 0.1        -> 0.0（倒していないとみなす）
-STEER_MID_THRESHOLD = 0.75  # 0.1 < |x| < 0.75 -> 0.5, 0.75 <= |x| <= 1.0 -> 1.0
+# ステアリングの量子化しきい値（傾きを5段階の値に丸める。送信頻度は上がる）
+STEER_DEADZONE = 0.1        # |x| <= 0.1                  -> 0.0（倒していないとみなす）
+STEER_THRESHOLD_1 = 0.325   # 0.1   < |x| < 0.325          -> 0.25
+STEER_THRESHOLD_2 = 0.55    # 0.325 <= |x| < 0.55          -> 0.5
+STEER_THRESHOLD_3 = 0.775   # 0.55  <= |x| < 0.775         -> 0.75
+                             # 0.775 <= |x| <= 1.0          -> 1.0
 
 SEND_INTERVAL_SEC = 0.05  # 状態監視のポーリング間隔（実際の送信は状態が変化した時のみ）
 
@@ -55,17 +58,23 @@ def camera_stream_main():
 
 
 def quantize_stick(stick_x):
-    """Lスティックの傾きを離散値へ量子化する（送信頻度を下げるため）
+    """Lスティックの傾きを離散値へ量子化する（5段階: 0, 0.25, 0.5, 0.75, 1.0）
 
-    |x| <= 0.1         -> 0.0（不感帯）
-    0.1 < |x| < 0.75   -> 0.5
-    0.75 <= |x| <= 1.0 -> 1.0
+    |x| <= 0.1                   -> 0.0（不感帯）
+    0.1   < |x| < 0.325          -> 0.25
+    0.325 <= |x| < 0.55          -> 0.5
+    0.55  <= |x| < 0.775         -> 0.75
+    0.775 <= |x| <= 1.0          -> 1.0
     """
     magnitude = abs(stick_x)
     if magnitude <= STEER_DEADZONE:
         quantized = 0.0
-    elif magnitude < STEER_MID_THRESHOLD:
+    elif magnitude < STEER_THRESHOLD_1:
+        quantized = 0.25
+    elif magnitude < STEER_THRESHOLD_2:
         quantized = 0.5
+    elif magnitude < STEER_THRESHOLD_3:
+        quantized = 0.75
     else:
         quantized = 1.0
     return quantized if stick_x >= 0 else -quantized
