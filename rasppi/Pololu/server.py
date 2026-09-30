@@ -56,11 +56,11 @@ def calc_wheel_speeds(stick_x):
         if stick_x > 0:
             # 右に倒している -> 右折 -> 右タイヤを減速・逆回転
             right_speed = SPEED_PERCENT * inner_ratio
-            left_speed = SPEED_PERCENT * 0.8
+            left_speed = SPEED_PERCENT * 0.5
         else:
             # 左に倒している -> 左折 -> 左タイヤを減速・逆回転
             left_speed = SPEED_PERCENT * inner_ratio
-            right_speed = SPEED_PERCENT * 0.8
+            right_speed = SPEED_PERCENT * 0.5
 
     return left_speed, right_speed
 
