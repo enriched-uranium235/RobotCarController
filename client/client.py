@@ -69,12 +69,12 @@ def quantize_stick(stick_x):
     magnitude = abs(stick_x)
     if magnitude <= STEER_DEADZONE:
         quantized = 0.0
-    # elif magnitude < STEER_THRESHOLD_1:
-    #     quantized = 0.25
-    # elif magnitude < STEER_THRESHOLD_2:
-    #     quantized = 0.5
-    # elif magnitude < STEER_THRESHOLD_3:
-    #     quantized = 0.75
+    elif magnitude < STEER_THRESHOLD_1:
+        quantized = 0.25
+    elif magnitude < STEER_THRESHOLD_2:
+        quantized = 0.5
+    elif magnitude < STEER_THRESHOLD_3:
+        quantized = 0.75
     else:
         quantized = 1.0
     return quantized if stick_x >= 0 else -quantized
